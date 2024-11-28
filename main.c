@@ -10,6 +10,7 @@
 
 /* Synchronization primitives */
 pthread_mutex_t mapper_mutex;
+pthread_mutex_t reducer_mutex;
 pthread_barrier_t barrier;
 
 /* Define input files type */
@@ -26,6 +27,7 @@ typedef struct {
 typedef struct {
     char *word;
     size_t *file_ids;
+    size_t file_ids_count;
 } aggregate_list_t;
 
 size_t files_size;
@@ -33,6 +35,9 @@ size_t current_file;
 file_data_t *files;
 partial_list_t **partial_list;
 size_t *partial_list_size;
+aggregate_list_t *aggregate_lists[26];
+size_t aggregate_lists_size[26];
+size_t current_p_list;
 
 /* Read input file */
 void read_input_file(char *input_file) {
@@ -64,7 +69,7 @@ void clean_word(char *word) {
 
 /* Mapper thread function */
 void *thread_mapper(void *arg) {
-    long thread_id = *((long *)arg);
+    // long thread_id = *((long *)arg);
     long assigned_file_index;
 
     while (true) {
@@ -127,7 +132,64 @@ void *thread_mapper(void *arg) {
 /* Reducer thread function */
 void *thread_reducer(void *arg) {
     pthread_barrier_wait(&barrier);
-    long thread_id = *((long *)arg);
+    // long thread_id = *((long *)arg);
+    size_t current_idx;
+    while (true) {
+        pthread_mutex_lock(&reducer_mutex);
+        if (current_p_list >= files_size) {
+            pthread_mutex_unlock(&reducer_mutex);
+            break;
+        } else {
+            current_idx = current_p_list;
+            current_p_list++;
+        }
+        pthread_mutex_unlock(&reducer_mutex);
+
+        for (size_t i = 0; i < partial_list_size[current_idx]; i++) {
+            char *word = partial_list[current_idx][i].word;
+            if (aggregate_lists[word[0] - 'a'] == NULL) {
+                /* List is empty*/
+                aggregate_lists[word[0] - 'a'] = calloc(1, sizeof(aggregate_list_t));
+                aggregate_lists[word[0] - 'a'][0].word = malloc(strlen(word) + 1);
+                strcpy(aggregate_lists[word[0] - 'a'][0].word, word);
+                aggregate_lists[word[0] - 'a'][0].file_ids = calloc(1, sizeof(size_t));
+                aggregate_lists[word[0] - 'a'][0].file_ids[0] = partial_list[current_idx][i].file_id;
+                aggregate_lists[word[0] - 'a'][0].file_ids_count = 1;
+                aggregate_lists_size[word[0] - 'a'] += 1;
+            } else {
+                /* Add element / fileid */
+                bool found = false;
+                for (size_t j = 0; j < aggregate_lists_size[word[0] - 'a']; j++) {
+                    if (strcmp(word, aggregate_lists[word[0] - 'a'][j].word) == 0) {
+                        /* Found word */
+                        bool file_id_exists = false;
+                        for (size_t k = 0; k < aggregate_lists[word[0] - 'a'][j].file_ids_count; k++) {
+                            if (aggregate_lists[word[0] - 'a'][j].file_ids[k] == partial_list[current_idx][i].file_id) {
+                                file_id_exists = true;
+                                break;
+                            }
+                        }
+                        if (!file_id_exists) {
+                            aggregate_lists[word[0] - 'a'][j].file_ids = realloc(aggregate_lists[word[0] - 'a'][j].file_ids, (aggregate_lists[word[0] - 'a'][j].file_ids_count + 1) * sizeof(size_t));
+                            aggregate_lists[word[0] - 'a'][j].file_ids[aggregate_lists[word[0] - 'a'][j].file_ids_count] = partial_list[current_idx][i].file_id;
+                            aggregate_lists[word[0] - 'a'][j].file_ids_count += 1;
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if (found == false) {
+                    aggregate_lists_size[word[0] - 'a'] += 1;
+                    aggregate_lists[word[0] - 'a'] = realloc(aggregate_lists[word[0] - 'a'], aggregate_lists_size[word[0] - 'a'] * sizeof(aggregate_list_t));
+                    aggregate_lists[word[0] - 'a'][aggregate_lists_size[word[0] - 'a'] - 1].word = malloc(strlen(word) + 1);
+                    strcpy(aggregate_lists[word[0] - 'a'][aggregate_lists_size[word[0] - 'a'] - 1].word, word);
+                    aggregate_lists[word[0] - 'a'][aggregate_lists_size[word[0] - 'a'] - 1].file_ids = malloc(sizeof(size_t));
+                    aggregate_lists[word[0] - 'a'][aggregate_lists_size[word[0] - 'a'] - 1].file_ids[0] = partial_list[current_idx][i].file_id;
+                    aggregate_lists[word[0] - 'a'][aggregate_lists_size[word[0] - 'a'] - 1].file_ids_count = 1;
+                }
+            }
+        }
+    }
     return NULL;
 }
 
@@ -162,7 +224,12 @@ int main(int argc, char **argv) {
 
     pthread_mutex_init(&mapper_mutex, NULL);
     pthread_barrier_init(&barrier, NULL, number_of_threads);
+    pthread_mutex_init(&reducer_mutex, NULL);
     current_file = 0;
+    current_p_list = 0;
+    for (int i = 0; i < 26; i++) {
+        aggregate_lists_size[i] = 0;
+    }
 
     for (id = 0; id < number_of_threads; id++) {
         arguments[id] = id;
@@ -191,6 +258,24 @@ int main(int argc, char **argv) {
         printf("\n");
     }
 
+    // Print aggregated lists
+    for (int i = 0; i < 26; i++) {
+        if (aggregate_lists[i] != NULL) {
+            printf("%c: ", 'a' + i);
+            for (size_t j = 0; j < aggregate_lists_size[i]; j++) {
+                printf("%s [", aggregate_lists[i][j].word);
+                for (size_t k = 0; k < aggregate_lists[i][j].file_ids_count; k++) {
+                    printf("%ld", aggregate_lists[i][j].file_ids[k]);
+                    if (k < aggregate_lists[i][j].file_ids_count - 1) {
+                        printf(" ");
+                    }
+                }
+                printf("]; ");
+            }
+            printf("\n");
+        }
+    }
+
     // Free allocated memory
     for (size_t i = 0; i < files_size; i++) {
         free(files[i].file_name);
@@ -203,6 +288,14 @@ int main(int argc, char **argv) {
         free(partial_list[i]);
     }
 
+    for (int i = 0; i < 26; i++) {
+        for (size_t j = 0; j < aggregate_lists_size[i]; j++) {
+            free(aggregate_lists[i][j].file_ids);
+            free(aggregate_lists[i][j].word);
+        }
+        free(aggregate_lists[i]);
+    }
+
     free(files);
     free(partial_list);
     free(partial_list_size);
@@ -210,6 +303,7 @@ int main(int argc, char **argv) {
     // Destroy the mutex
     pthread_mutex_destroy(&mapper_mutex);
     pthread_barrier_destroy(&barrier);
+    pthread_mutex_destroy(&reducer_mutex);
 
     return 0;
 }
