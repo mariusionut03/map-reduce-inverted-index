@@ -6,6 +6,18 @@
 #include "helper.h"
 #include "main.h"
 
+/* Comparison function for sorting file IDs */
+int compare_file_ids(const void *a, const void *b) {
+    size_t id1 = *(size_t *)a;
+    size_t id2 = *(size_t *)b;
+    return (id1 > id2) - (id1 < id2);
+}
+
+/* Function to sort file IDs within each aggregate list */
+void sort_file_ids(aggregate_list_t *aggregate_list) {
+    qsort(aggregate_list->file_ids, aggregate_list->file_ids_count, sizeof(size_t), compare_file_ids);
+}
+
 /* Function for Mapper Thread */
 void *thread_mapper(void *arg) {
     thread_arguments_t arguments = *(thread_arguments_t *)arg;
@@ -37,13 +49,13 @@ void *thread_mapper(void *arg) {
 
         while ((line_length = getline(&buffer, &bufsize, file)) != -1) {
             char *saveptr;
-            char *word = strtok_r(buffer, " “”.,?!\t\n", &saveptr);
+            char *word = strtok_r(buffer, " \t\n", &saveptr);
             while (word != NULL) {
                 clean_word(word);
                 if (strlen(word) > 0) {
                     add_partial_list(&(arguments.partial_lists[fid]), word, fid + 1);
                 }
-                word = strtok_r(NULL, " “”.,?!\t\n", &saveptr);
+                word = strtok_r(NULL, " \t\n", &saveptr);
             }
         }
         free(buffer);
@@ -82,6 +94,17 @@ void *thread_reducer(void *arg) {
     }
 
     pthread_barrier_wait(arguments.barrier_reducer);
+
+    // Sort file IDs within each aggregate list
+    for (size_t i = 0; i < 26; i++) {
+        for (size_t j = 0; j < arguments.aggregate_lists[i].size; j++) {
+            pthread_mutex_lock(arguments.mutex_reducer);
+            sort_file_ids(&(arguments.aggregate_lists[i].data[j]));
+            pthread_mutex_unlock(arguments.mutex_reducer);
+        }
+    }
+
+
     // Divide the sorting work among the threads
     size_t num_threads = arguments.num_reducers;
     size_t thread_id = arguments.thread_id - arguments.num_mappers; // Adjust thread_id for reducer threads
@@ -94,6 +117,7 @@ void *thread_reducer(void *arg) {
         qsort(arguments.aggregate_lists[i].data, arguments.aggregate_lists[i].size, sizeof(aggregate_list_t), compare_aggregate_list);
         pthread_mutex_unlock(arguments.mutex_reducer);
     }
+
 
     pthread_barrier_wait(arguments.barrier_reducer);
 
@@ -144,7 +168,7 @@ int main(int argc, char **argv) {
     size_t current_partial_list = 0;
 
     read_input_file(&files, &num_files, input_file);
-    print_files(files, num_files);
+    // print_files(files, num_files);
 
     /* Initialize partial and aggregate lists */
     partial_list_vector_t *partial_lists = malloc(num_files * sizeof(partial_list_vector_t));
