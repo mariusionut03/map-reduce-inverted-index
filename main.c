@@ -1,42 +1,24 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <pthread.h>
-#include <stddef.h>
 #include "helper.h"
 #include "main.h"
 
-/* Comparison function for sorting file IDs */
-int compare_file_ids(const void *a, const void *b) {
-    size_t id1 = *(size_t *)a;
-    size_t id2 = *(size_t *)b;
-    return (id1 > id2) - (id1 < id2);
-}
-
-/* Function to sort file IDs within each aggregate list */
-void sort_file_ids(aggregate_list_t *aggregate_list) {
-    qsort(aggregate_list->file_ids, aggregate_list->file_ids_count, sizeof(size_t), compare_file_ids);
-}
-
-/* Function for Mapper Thread */
+/* Function launched by a Mapper Thread */
 void *thread_mapper(void *arg) {
     thread_arguments_t arguments = *(thread_arguments_t *)arg;
 
     size_t fid;
 
     while (true) {
+        /* Take an unprocessed file */
         pthread_mutex_lock(arguments.mutex_mapper);
-
         if (*(arguments.current_file) >= arguments.num_files) {
             pthread_mutex_unlock(arguments.mutex_mapper);
             break;
         }
-
         fid = *(arguments.current_file);
         *(arguments.current_file) += 1;
-
         pthread_mutex_unlock(arguments.mutex_mapper);
 
+        /* Open associated file */
         FILE *file = fopen(arguments.files[fid], "r");
         if (file == NULL) {
             printf("Eroare la deschiderea fisierului: %s\n", arguments.files[fid]);
@@ -47,11 +29,14 @@ void *thread_mapper(void *arg) {
         size_t bufsize = 0;
         ssize_t line_length;
 
+        /* Read line by line */
         while ((line_length = getline(&buffer, &bufsize, file)) != -1) {
             char *saveptr;
+            /* Use thread_safe strtok_r to divide the char array,
+                clean the word and add it to the partial list */
             char *word = strtok_r(buffer, " \t\n", &saveptr);
             while (word != NULL) {
-                clean_word(word);
+                transform_word(word);
                 if (strlen(word) > 0) {
                     add_partial_list(&(arguments.partial_lists[fid]), word, fid + 1);
                 }
@@ -63,17 +48,22 @@ void *thread_mapper(void *arg) {
         fclose(file);
     }
 
+    /* Wait for all the threads before moving on. Used to
+        make sure reducer threads start after mapper ones. */
     pthread_barrier_wait(arguments.barrier);
     return NULL;
 }
 
-/* Function for Reducer Thread */
+/* Function launched by a Reducer Thread */
 void *thread_reducer(void *arg) {
     thread_arguments_t arguments = *(thread_arguments_t *)arg;
+
+    /* Wait before all the mapper threads finish their work */
     pthread_barrier_wait(arguments.barrier);
 
     size_t lid;
     while (true) {
+        /* Take an unprocessed parial list */
         pthread_mutex_lock(arguments.mutex_reducer);
         if (*(arguments.current_partial_list) >= arguments.num_files) {
             pthread_mutex_unlock(arguments.mutex_reducer);
@@ -83,60 +73,54 @@ void *thread_reducer(void *arg) {
         *(arguments.current_partial_list) += 1;
         pthread_mutex_unlock(arguments.mutex_reducer);
 
+        /* Place words in corresponding aggregate list
+            (one for every letter of the alphabet) */
         for (size_t i = 0; i < arguments.partial_lists[lid].size; i++) {
             char *word = arguments.partial_lists[lid].data[i].word;
-            pthread_mutex_lock(arguments.mutex_reducer);
+            pthread_mutex_lock(&arguments.aggregate_mutex[word[0] - 'a']);
             add_aggregate_list(&(arguments.aggregate_lists[word[0] - 'a']),
                                 word,
                                 arguments.partial_lists[lid].data[i].file_id);
-            pthread_mutex_unlock(arguments.mutex_reducer);
+            pthread_mutex_unlock(&arguments.aggregate_mutex[word[0] - 'a']);
         }
     }
 
+    /* Wait untill all the aggregate lists are built */
     pthread_barrier_wait(arguments.barrier_reducer);
 
-    // Sort file IDs within each aggregate list
-    for (size_t i = 0; i < 26; i++) {
-        for (size_t j = 0; j < arguments.aggregate_lists[i].size; j++) {
-            pthread_mutex_lock(arguments.mutex_reducer);
-            sort_file_ids(&(arguments.aggregate_lists[i].data[j]));
-            pthread_mutex_unlock(arguments.mutex_reducer);
-        }
-    }
-
-
-    // Divide the sorting work among the threads
-    size_t num_threads = arguments.num_reducers;
-    size_t thread_id = arguments.thread_id - arguments.num_mappers; // Adjust thread_id for reducer threads
-    size_t lists_per_thread = 26 / num_threads;
-    size_t start_index = thread_id * lists_per_thread;
-    size_t end_index = (thread_id == num_threads - 1) ? 26 : start_index + lists_per_thread;
-
-    for (size_t i = start_index; i < end_index; i++) {
+    size_t fid;
+    while (true) {
+        /* Take an unprocessed aggregate list */
         pthread_mutex_lock(arguments.mutex_reducer);
-        qsort(arguments.aggregate_lists[i].data, arguments.aggregate_lists[i].size, sizeof(aggregate_list_t), compare_aggregate_list);
+        if (*(arguments.current_letter) >= 26) {
+            pthread_mutex_unlock(arguments.mutex_reducer);
+            break;
+        }
+        fid = *(arguments.current_letter);
+        *(arguments.current_letter) += 1;
         pthread_mutex_unlock(arguments.mutex_reducer);
-    }
 
+        /* Sort file ids for every word */
+        for (size_t j = 0; j < arguments.aggregate_lists[fid].size; j++) {
+            sort_file_ids(&(arguments.aggregate_lists[fid].data[j]));
+        }
 
-    pthread_barrier_wait(arguments.barrier_reducer);
+        /* Sort words */
+        qsort(arguments.aggregate_lists[fid].data, arguments.aggregate_lists[fid].size, sizeof(aggregate_list_t), compare_aggregate_list);
 
-    // Write the output files
-    for (size_t i = start_index; i < end_index; i++) {
+        /* Open file and write output */
         char filename[6];
-        pthread_mutex_lock(arguments.mutex_reducer);
-        snprintf(filename, sizeof(filename), "%c.txt", (char)('a' + i));
+        snprintf(filename, sizeof(filename), "%c.txt", (char)('a' + fid));
         FILE *output_file = fopen(filename, "w");
         if (output_file == NULL) {
             printf("Eroare la deschiderea fisierului de iesire: %s\n", filename);
             exit(-1);
         }
-
-        for (size_t j = 0; j < arguments.aggregate_lists[i].size; j++) {
-            fprintf(output_file, "%s:[", arguments.aggregate_lists[i].data[j].word);
-            for (size_t k = 0; k < arguments.aggregate_lists[i].data[j].file_ids_count; k++) {
-                fprintf(output_file, "%zu", arguments.aggregate_lists[i].data[j].file_ids[k]);
-                if (k < arguments.aggregate_lists[i].data[j].file_ids_count - 1) {
+        for (size_t j = 0; j < arguments.aggregate_lists[fid].size; j++) {
+            fprintf(output_file, "%s:[", arguments.aggregate_lists[fid].data[j].word);
+            for (size_t k = 0; k < arguments.aggregate_lists[fid].data[j].file_ids_count; k++) {
+                fprintf(output_file, "%zu", arguments.aggregate_lists[fid].data[j].file_ids[k]);
+                if (k < arguments.aggregate_lists[fid].data[j].file_ids_count - 1) {
                     fprintf(output_file, " ");
                 }
             }
@@ -144,7 +128,6 @@ void *thread_reducer(void *arg) {
         }
 
         fclose(output_file);
-        pthread_mutex_unlock(arguments.mutex_reducer);
     }
 
     return NULL;
@@ -156,7 +139,6 @@ int main(int argc, char **argv) {
         printf("Format: ./tema1 <numar_mapperi> <numar_reduceri> <fisier_intrare>\n");
         exit(-1);
     }
-
     long num_mappers = atoi(argv[1]);
     long num_reducers = atoi(argv[2]);
     char *input_file = argv[3];
@@ -164,11 +146,8 @@ int main(int argc, char **argv) {
     /* Read and store files */
     char **files = NULL;
     size_t num_files;
-    size_t current_file = 0;
-    size_t current_partial_list = 0;
 
     read_input_file(&files, &num_files, input_file);
-    // print_files(files, num_files);
 
     /* Initialize partial and aggregate lists */
     partial_list_vector_t *partial_lists = malloc(num_files * sizeof(partial_list_vector_t));
@@ -188,20 +167,34 @@ int main(int argc, char **argv) {
     void *status;
     thread_arguments_t arguments[num_mappers + num_reducers];
 
+    size_t current_file = 0;
+    size_t current_partial_list = 0;
+    size_t current_letter = 0;
+
     /* Define and initialise synchronisation primitives */
     pthread_mutex_t mutex_mapper;
     pthread_mutex_t mutex_reducer;
+    pthread_mutex_t aggregate_mutex[26];
+
     pthread_barrier_t barrier;
     pthread_barrier_t barrier_reducer;
+
     r = pthread_mutex_init(&mutex_mapper, NULL);
     r = pthread_mutex_init(&mutex_reducer, NULL);
+    for (int i = 0; i < 26; ++i) {
+        pthread_mutex_init(aggregate_mutex + i, NULL);
+    }
+
     r = pthread_barrier_init(&barrier, NULL, num_mappers + num_reducers);
     r = pthread_barrier_init(&barrier_reducer, NULL, num_reducers);
 
+    /* Build the argument and create the thread */
     for (id = 0; id < num_mappers + num_reducers; id++) {
         arguments[id].thread_id = id;
         arguments[id].current_file = &current_file;
         arguments[id].current_partial_list = &current_partial_list;
+        arguments[id].current_letter = &current_letter;
+
         arguments[id].files = files;
         arguments[id].num_files = num_files;
         arguments[id].num_mappers = num_mappers;
@@ -209,6 +202,7 @@ int main(int argc, char **argv) {
 
         arguments[id].mutex_mapper = &mutex_mapper;
         arguments[id].mutex_reducer = &mutex_reducer;
+        arguments[id].aggregate_mutex = aggregate_mutex;
         arguments[id].barrier = &barrier;
         arguments[id].barrier_reducer = &barrier_reducer;
         
@@ -222,6 +216,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Wait for all the threads */
     for (id = 0; id < num_mappers + num_reducers; id++) {
         r = pthread_join(threads[id], &status);
         if (r) {
@@ -229,12 +224,6 @@ int main(int argc, char **argv) {
             exit(-1);
         }
     }
-
-    /* Print partial lists */
-    // print_partial_lists(partial_lists, num_files);
-
-    /* Print aggregate lists */
-    // print_aggregate_lists(aggregate_lists);
 
     /* Free allocated memory */
     for (size_t i = 0; i < num_files; i++) {

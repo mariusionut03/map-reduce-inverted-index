@@ -20,7 +20,9 @@ void read_input_file(char ***files, size_t *num_files, const char *input_file) {
     fclose(file);
 }
 
-void clean_word(char *word) {
+/* Function that cleans the word of non-alpha characters
+    and transforms it in lowercase. */
+void transform_word(char *word) {
     int i, j;
     for (i = 0, j = 0; word[i]; i++) {
         if (isalpha(word[i])) {
@@ -41,7 +43,6 @@ void init_partial_list_vector(partial_list_vector_t *vector) {
 void add_partial_list(partial_list_vector_t *vector, const char *word, size_t file_id) {
     for (size_t i = 0; i < vector->size; i++) {
         if (strcmp(vector->data[i].word, word) == 0) {
-            // Word already exists, do not add
             return;
         }
     }
@@ -104,7 +105,8 @@ void destroy_aggregate_list_vector(aggregate_list_vector_t *vector) {
     vector->capacity = 0;
 }
 
-/* Comparison function for sorting aggregate lists */
+/* Comparison function for sorting items by
+    file ids count, then lexicographically */
 int compare_aggregate_list(const void *a, const void *b) {
     aggregate_list_t *item1 = (aggregate_list_t *)a;
     aggregate_list_t *item2 = (aggregate_list_t *)b;
@@ -118,31 +120,14 @@ int compare_aggregate_list(const void *a, const void *b) {
     return strcmp(item1->word, item2->word);
 }
 
-/* Print functions */
-void print_files(char **files, size_t num_files) {
-    for (size_t i = 0; i < num_files; i++) {
-        printf("%ld) %s\n", i, files[i]);
-    }
+/* Comparison function for sorting file IDs */
+int compare_file_ids(const void *a, const void *b) {
+    size_t id1 = *(size_t *)a;
+    size_t id2 = *(size_t *)b;
+    return (id1 > id2) - (id1 < id2);
 }
 
-void print_partial_lists(partial_list_vector_t *partial_lists, size_t num_files) {
-    for (size_t i = 0; i < num_files; i++) {
-        printf("Partial list %zu:\n", i);
-        for (size_t j = 0; j < partial_lists[i].size; j++) {
-            printf("  Word: %s, File ID: %zu\n", partial_lists[i].data[j].word, partial_lists[i].data[j].file_id);
-        }
-    }
-}
-
-void print_aggregate_lists(aggregate_list_vector_t *aggregate_lists) {
-    for (size_t i = 0; i < 26; i++) {
-        printf("Aggregate list %c:\n", (char)('a' + i));
-        for (size_t j = 0; j < aggregate_lists[i].size; j++) {
-            printf("  Word: %s, File IDs: ", aggregate_lists[i].data[j].word);
-            for (size_t k = 0; k < aggregate_lists[i].data[j].file_ids_count; k++) {
-                printf("%zu ", aggregate_lists[i].data[j].file_ids[k]);
-            }
-            printf("\n");
-        }
-    }
+/* Function to sort file IDs within each aggregate list */
+void sort_file_ids(aggregate_list_t *aggregate_list) {
+    qsort(aggregate_list->file_ids, aggregate_list->file_ids_count, sizeof(size_t), compare_file_ids);
 }

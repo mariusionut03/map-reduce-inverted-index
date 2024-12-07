@@ -1,9 +1,9 @@
-#ifndef HELPER_H
-#define HELPER_H
+#pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "string.h"
+#include "stdbool.h"
 
 typedef struct {
     char *word;
@@ -30,7 +30,8 @@ typedef struct {
 
 /* Read input */
 void read_input_file(char ***files, size_t *num_files, const char *input_file);
-void clean_word(char *word);
+/* Transform words */
+void transform_word(char *word);
 
 /* Handle partial list */
 void init_partial_list_vector(partial_list_vector_t *vector);
@@ -41,11 +42,11 @@ void destroy_partial_list_vector(partial_list_vector_t *vector);
 void init_aggregate_list_vector(aggregate_list_vector_t *vector);
 void add_aggregate_list(aggregate_list_vector_t *vector, const char *word, size_t file_id);
 void destroy_aggregate_list_vector(aggregate_list_vector_t *vector);
+
+/* Comparison function for sorting items by
+    file ids count, then lexicographically */
 int compare_aggregate_list(const void *a, const void *b);
-
-/* Print functions */
-void print_files(char **files, size_t num_files);
-void print_partial_lists(partial_list_vector_t *partial_lists, size_t num_files);
-void print_aggregate_lists(aggregate_list_vector_t *aggregate_lists);
-
-#endif /* HELPER_H */
+/* Comparison function for sorting file IDs */
+int compare_file_ids(const void *a, const void *b);
+/* Function to sort file IDs within each aggregate list */
+void sort_file_ids(aggregate_list_t *aggregate_list);
