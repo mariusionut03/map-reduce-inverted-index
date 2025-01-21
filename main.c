@@ -1,5 +1,7 @@
 #include "helper.h"
 #include "main.h"
+#include <sys/stat.h>
+#include <sys/types.h>
 
 /* Function launched by a Mapper Thread */
 void *thread_mapper(void *arg) {
@@ -19,9 +21,11 @@ void *thread_mapper(void *arg) {
         pthread_mutex_unlock(arguments.mutex_mapper);
 
         /* Open associated file */
-        FILE *file = fopen(arguments.files[fid], "r");
+        char filepath[256];
+        snprintf(filepath, sizeof(filepath), "tests/%s", arguments.files[fid]);
+        FILE *file = fopen(filepath, "r");
         if (file == NULL) {
-            printf("Eroare la deschiderea fisierului: %s\n", arguments.files[fid]);
+            printf("Eroare la deschiderea fisierului: %s\n", filepath);
             exit(-1);
         }
 
@@ -109,8 +113,15 @@ void *thread_reducer(void *arg) {
         qsort(arguments.aggregate_lists[fid].data, arguments.aggregate_lists[fid].size, sizeof(aggregate_list_t), compare_aggregate_list);
 
         /* Open file and write output */
-        char filename[6];
-        snprintf(filename, sizeof(filename), "%c.txt", (char)('a' + fid));
+        char filename[19];
+        snprintf(filename, sizeof(filename), "tests/output/%c.txt", (char)('a' + fid));
+        
+        /* Ensure the output directory exists */
+        struct stat st = {0};
+        if (stat("tests/output", &st) == -1) {
+            mkdir("tests/output", 0700);
+        }
+        
         FILE *output_file = fopen(filename, "w");
         if (output_file == NULL) {
             printf("Eroare la deschiderea fisierului de iesire: %s\n", filename);
@@ -136,7 +147,7 @@ void *thread_reducer(void *arg) {
 int main(int argc, char **argv) {
     /* Check and store command line arguments */
     if (argc != 4) {
-        printf("Format: ./tema1 <numar_mapperi> <numar_reduceri> <fisier_intrare>\n");
+        printf("Format: ./main <numar_mapperi> <numar_reduceri> <fisier_intrare>\n");
         exit(-1);
     }
     long num_mappers = atoi(argv[1]);

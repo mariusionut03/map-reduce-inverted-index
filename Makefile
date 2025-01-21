@@ -1,4 +1,5 @@
 build:
-		gcc main.c helper.c -o tema1 -lpthread -lm -Wall -Wextra
+	gcc main.c helper.c -o main -lpthread -lm -Wall -Wextra
 clean:
-		rm tema1
+	rm -r tests/output
+	rm main
